@@ -28,14 +28,10 @@ const dayLabels = {
   Friday: "Friday"
 }
 
-// Break time slots (typically lunch break)
-const BREAK_SLOTS = ["12:00", "12:30", "13:00", "13:30"]
-
 export default function Timetable() {
-  const [selectedSection, setSelectedSection] = useState<string>("")
-  const [viewMode, setViewMode] = useState<'desktop' | 'mobile'>('desktop')
-  const queryClient = useQueryClient()
+  const [selectedSection, setSelectedSection] = useState("")
   const { toast } = useToast()
+  const queryClient = useQueryClient()
 
   const generateTimetableMutation = useMutation({
     mutationFn: async (sectionId: string) => {
@@ -79,8 +75,8 @@ export default function Timetable() {
       const tutorialRooms = ['T-1', 'T-2', 'T-3', 'T-4']
 
       // Ensure these classrooms exist
-      const ensureClassrooms = async (roomNames: string[]) => {
-        const existingRooms: any[] = []
+      const ensureClassrooms = async (roomNames) => {
+        const existingRooms = []
         
         for (const roomName of roomNames) {
           const { data: existing } = await supabase
@@ -109,143 +105,115 @@ export default function Timetable() {
       const labClassrooms = await ensureClassrooms(labRooms)
       const tutorialClassrooms = await ensureClassrooms(tutorialRooms)
 
-      // Generate batch names based on section name (A -> A1, A2, A3)
-      const numberOfBatches = 3
-      const batches = Array.from({ length: numberOfBatches }, (_, i) => ({
-        number: i + 1,
-        name: `${section.name}${i + 1}`
-      }))
-
-      // Track schedules
-      const facultySchedule: Record<string, Set<string>> = {} // day-time -> Set<facultyId>
-      const classroomSchedule: Record<string, Set<string>> = {} // day-time -> Set<classroomId>
-      const dailySchedule: Record<string, Array<{time: string, duration: number}>> = {} // day -> [{time, duration}]
-      const subjectLectureCount: Record<string, Record<string, number>> = {} // subjectId -> day -> count
-
-      // Initialize daily schedules
+      // Time slots and scheduling helpers
+      const BREAK_START = 8 // 12:00 PM index in timeSlots array
+      const BREAK_END = 11   // 13:30 PM index (1.5 hour break)
+      
+      // Scheduling state
+      const schedule = {}
+      const facultySchedule = {}
+      const classroomSchedule = {}
+      const subjectWeeklyHours = {}
+      
+      // Initialize scheduling state
       daysOfWeek.forEach(day => {
-        dailySchedule[day] = []
-        subjects.forEach(subject => {
-          if (!subjectLectureCount[subject.id]) subjectLectureCount[subject.id] = {}
-          subjectLectureCount[subject.id][day] = 0
-        })
+        schedule[day] = Array(timeSlots.length).fill(null)
+        facultySchedule[day] = {}
+        classroomSchedule[day] = {}
       })
-
+      
+      subjects.forEach(subject => {
+        subjectWeeklyHours[subject.id] = 0
+      })
+      
       // Helper functions
-      const getSlotKey = (day: string, time: string) => `${day}-${time}`
+      const getTimeIndex = (time) => timeSlots.indexOf(time)
       
-      const markFacultyBusy = (facultyId: string, day: string, startTime: string, duration: number) => {
-        let timeIndex = timeSlots.indexOf(startTime)
-        for (let i = 0; i < duration * 2; i++) { // duration in hours * 2 (30-min slots)
-          if (timeIndex + i < timeSlots.length) {
-            const key = getSlotKey(day, timeSlots[timeIndex + i])
-            if (!facultySchedule[key]) facultySchedule[key] = new Set()
-            facultySchedule[key].add(facultyId)
-          }
+      const isSlotAvailable = (day, timeIndex, duration = 1) => {
+        const endIndex = timeIndex + (duration * 2) // duration in hours * 2 (30-min slots)
+        for (let i = timeIndex; i < endIndex && i < timeSlots.length; i++) {
+          if (schedule[day][i] !== null) return false
         }
+        return endIndex <= timeSlots.length
       }
       
-      const markClassroomOccupied = (classroomId: string, day: string, startTime: string, duration: number) => {
-        let timeIndex = timeSlots.indexOf(startTime)
-        for (let i = 0; i < duration * 2; i++) {
-          if (timeIndex + i < timeSlots.length) {
-            const key = getSlotKey(day, timeSlots[timeIndex + i])
-            if (!classroomSchedule[key]) classroomSchedule[key] = new Set()
-            classroomSchedule[key].add(classroomId)
+      const isFacultyAvailable = (facultyId, day, timeIndex, duration = 1) => {
+        const endIndex = timeIndex + (duration * 2)
+        for (let i = timeIndex; i < endIndex && i < timeSlots.length; i++) {
+          if (facultySchedule[day][i] && facultySchedule[day][i].has(facultyId)) {
+            return false
           }
-        }
-      }
-
-      const addToDailySchedule = (day: string, startTime: string, duration: number) => {
-        dailySchedule[day].push({ time: startTime, duration })
-        dailySchedule[day].sort((a, b) => timeSlots.indexOf(a.time) - timeSlots.indexOf(b.time))
-      }
-
-      const isFacultyAvailable = (facultyId: string, day: string, startTime: string, duration: number) => {
-        let timeIndex = timeSlots.indexOf(startTime)
-        for (let i = 0; i < duration * 2; i++) {
-          if (timeIndex + i >= timeSlots.length) return false
-          const key = getSlotKey(day, timeSlots[timeIndex + i])
-          if (facultySchedule[key]?.has(facultyId)) return false
         }
         return true
       }
-
-      const isClassroomAvailable = (classroomId: string, day: string, startTime: string, duration: number) => {
-        let timeIndex = timeSlots.indexOf(startTime)
-        for (let i = 0; i < duration * 2; i++) {
-          if (timeIndex + i >= timeSlots.length) return false
-          const key = getSlotKey(day, timeSlots[timeIndex + i])
-          if (classroomSchedule[key]?.has(classroomId)) return false
+      
+      const isClassroomAvailable = (classroomId, day, timeIndex, duration = 1) => {
+        const endIndex = timeIndex + (duration * 2)
+        for (let i = timeIndex; i < endIndex && i < timeSlots.length; i++) {
+          if (classroomSchedule[day][i] && classroomSchedule[day][i].has(classroomId)) {
+            return false
+          }
         }
         return true
       }
-
-      const getDailyDuration = (day: string) => {
-        return dailySchedule[day].reduce((total, session) => total + session.duration, 0)
+      
+      const markSlotOccupied = (day, timeIndex, duration, facultyId, classroomId, entry) => {
+        const endIndex = timeIndex + (duration * 2)
+        for (let i = timeIndex; i < endIndex && i < timeSlots.length; i++) {
+          schedule[day][i] = entry
+          
+          if (!facultySchedule[day][i]) facultySchedule[day][i] = new Set()
+          facultySchedule[day][i].add(facultyId)
+          
+          if (!classroomSchedule[day][i]) classroomSchedule[day][i] = new Set()
+          classroomSchedule[day][i].add(classroomId)
+        }
       }
-
-      const needsBreak = (day: string, newDuration: number) => {
-        const totalDuration = getDailyDuration(day) + newDuration
-        return totalDuration >= 4
+      
+      // Get random starting times for variety (avoiding very early and very late slots)
+      const getRandomStartTimes = () => {
+        const startTimes = [0, 1, 2, 3, 4, 5, 6, 7, 12, 13, 14, 15] // Various start times throughout the day
+        return startTimes.sort(() => Math.random() - 0.5)
       }
-
-      const findAvailableTimeSlot = (day: string, duration: number, preferredStart?: number) => {
-        const startIndex = preferredStart || 0
-        const maxEndIndex = timeSlots.length - (duration * 2)
+      
+      // Check if time is during break
+      const isBreakTime = (timeIndex) => {
+        return timeIndex >= BREAK_START && timeIndex <= BREAK_END
+      }
+      
+      // Find best time slot for a class
+      const findBestTimeSlot = (day, duration, facultyId, classroom, preferredTimes = null) => {
+        const timesToTry = preferredTimes || getRandomStartTimes()
         
-        for (let i = startIndex; i <= maxEndIndex; i++) {
-          const startTime = timeSlots[i]
+        for (const startIndex of timesToTry) {
+          // Skip break times for regular classes
+          if (isBreakTime(startIndex)) continue
           
-          // Skip if it's break time and we need a break
-          if (needsBreak(day, duration) && BREAK_SLOTS.includes(startTime)) {
-            continue
-          }
-          
-          // Check if this time slot works
-          let canSchedule = true
-          
-          // If we need a break and total duration >= 4, ensure break is scheduled
-          if (needsBreak(day, duration)) {
-            const currentDuration = getDailyDuration(day)
-            const scheduledSessions = dailySchedule[day]
-            
-            // Check if we need to insert a break
-            if (currentDuration >= 2 && scheduledSessions.length > 0) {
-              // Find if there's a natural break in the schedule
-              let hasBreak = false
-              for (let j = 0; j < scheduledSessions.length - 1; j++) {
-                const currentEnd = timeSlots.indexOf(scheduledSessions[j].time) + (scheduledSessions[j].duration * 2)
-                const nextStart = timeSlots.indexOf(scheduledSessions[j + 1].time)
-                if (nextStart - currentEnd >= 2) { // 1 hour gap
-                  hasBreak = true
-                  break
-                }
-              }
-              
-              // If no natural break exists and we're adding more classes, ensure gap
-              if (!hasBreak && scheduledSessions.length > 0) {
-                const lastSession = scheduledSessions[scheduledSessions.length - 1]
-                const lastEndIndex = timeSlots.indexOf(lastSession.time) + (lastSession.duration * 2)
-                const currentStartIndex = i
-                
-                if (currentStartIndex - lastEndIndex < 2 && currentDuration >= 2) {
-                  continue // Skip this slot to maintain break
-                }
-              }
-            }
-          }
-          
-          if (canSchedule) {
-            return startTime
+          if (isSlotAvailable(day, startIndex, duration) &&
+              isFacultyAvailable(facultyId, day, startIndex, duration) &&
+              isClassroomAvailable(classroom.id, day, startIndex, duration)) {
+            return startIndex
           }
         }
+        
+        // If preferred times don't work, try all available slots (excluding breaks)
+        for (let i = 0; i < timeSlots.length - (duration * 2); i++) {
+          if (isBreakTime(i)) continue
+          
+          if (isSlotAvailable(day, i, duration) &&
+              isFacultyAvailable(facultyId, day, i, duration) &&
+              isClassroomAvailable(classroom.id, day, i, duration)) {
+            return i
+          }
+        }
+        
         return null
       }
-
-      const timetableEntries: any[] = []
-
-      // Step 1: Schedule lectures for each subject across all 5 days
+      
+      const timetableEntries = []
+      const shuffledDays = [...daysOfWeek].sort(() => Math.random() - 0.5)
+      
+      // Step 1: Schedule lectures with proper hour distribution
       for (const subject of subjects) {
         const lectureFaculty = facultySubjects.find(fs => 
           fs.subject_id === subject.id && fs.subject_types?.includes('lecture')
@@ -253,202 +221,155 @@ export default function Timetable() {
         
         if (!lectureFaculty) continue
 
-        // Calculate lectures needed per week (minimum 2, distribute across days)
-        const totalLectures = Math.max(2, Math.min(subject.weekly_hours, 6))
-        const lecturesPerDay = Math.floor(totalLectures / 5) || 1
-        const extraLectures = totalLectures % 5
-
-        for (let dayIndex = 0; dayIndex < daysOfWeek.length; dayIndex++) {
-          const day = daysOfWeek[dayIndex]
-          let lecturesToSchedule = lecturesPerDay + (dayIndex < extraLectures ? 1 : 0)
-
-          for (let lectureNum = 0; lectureNum < lecturesToSchedule; lectureNum++) {
-            const startTime = findAvailableTimeSlot(day, 1) // 1 hour lecture
+        const weeklyHours = subject.weekly_hours
+        let hoursScheduled = 0
+        
+        // Distribute hours across days (max 2 hours per day to avoid student fatigue)
+        const maxHoursPerDay = 2
+        const daysNeeded = Math.ceil(weeklyHours / maxHoursPerDay)
+        
+        for (let dayIndex = 0; dayIndex < daysNeeded && hoursScheduled < weeklyHours; dayIndex++) {
+          const day = shuffledDays[dayIndex]
+          const hoursForThisDay = Math.min(maxHoursPerDay, weeklyHours - hoursScheduled)
+          
+          // Schedule in 1-hour blocks
+          for (let hour = 0; hour < hoursForThisDay; hour++) {
+            if (hoursScheduled >= weeklyHours) break
             
-            if (startTime && isFacultyAvailable(lectureFaculty.faculty_id, day, startTime, 1)) {
-              // Find available classroom
-              let classroom = null
-              for (const room of lectureClassrooms) {
-                if (isClassroomAvailable(room.id, day, startTime, 1)) {
-                  classroom = room
-                  break
-                }
-              }
+            // Find available classroom
+            const availableClassroom = lectureClassrooms.find(room =>
+              findBestTimeSlot(day, 1, lectureFaculty.faculty_id, room) !== null
+            )
+            
+            if (!availableClassroom) continue
+            
+            const timeIndex = findBestTimeSlot(day, 1, lectureFaculty.faculty_id, availableClassroom)
+            if (timeIndex === null) continue
+            
+            const startTime = timeSlots[timeIndex]
+            const endTime = timeSlots[timeIndex + 2] || '18:00'
+            
+            const entry = {
+              section_id: sectionId,
+              subject_id: subject.id,
+              faculty_id: lectureFaculty.faculty_id,
+              classroom_id: availableClassroom.id,
+              day_of_week: day,
+              start_time: startTime,
+              end_time: endTime,
+              subject_type: 'lecture',
+              batch_number: null
+            }
+            
+            timetableEntries.push(entry)
+            markSlotOccupied(day, timeIndex, 1, lectureFaculty.faculty_id, availableClassroom.id, entry)
+            hoursScheduled++
+            subjectWeeklyHours[subject.id] += 1
+          }
+        }
+      }
+      
+      // Step 2: Schedule labs and tutorials
+      const numberOfBatches = 3
+      const batches = Array.from({ length: numberOfBatches }, (_, i) => ({
+        number: i + 1,
+        name: `${section.name}${i + 1}`
+      }))
+      
+      for (const subject of subjects) {
+        // Schedule labs (2 hours each)
+        if (subject.has_lab) {
+          const labFaculty = facultySubjects.find(fs => 
+            fs.subject_id === subject.id && fs.subject_types?.includes('lab')
+          )
+          
+          if (labFaculty) {
+            const shuffledBatches = [...batches].sort(() => Math.random() - 0.5)
+            
+            for (const batch of shuffledBatches) {
+              let scheduled = false
               
-              if (classroom) {
-                const timeIndex = timeSlots.indexOf(startTime)
-                const endTime = timeSlots[timeIndex + 2] || '18:00'
+              // Try different days for each batch
+              for (const day of shuffledDays) {
+                if (scheduled) break
                 
-                timetableEntries.push({
+                const availableClassroom = labClassrooms.find(room =>
+                  findBestTimeSlot(day, 2, labFaculty.faculty_id, room) !== null
+                )
+                
+                if (!availableClassroom) continue
+                
+                const timeIndex = findBestTimeSlot(day, 2, labFaculty.faculty_id, availableClassroom)
+                if (timeIndex === null) continue
+                
+                const startTime = timeSlots[timeIndex]
+                const endTime = timeSlots[timeIndex + 4] || '18:00'
+                
+                const entry = {
                   section_id: sectionId,
                   subject_id: subject.id,
-                  faculty_id: lectureFaculty.faculty_id,
-                  classroom_id: classroom.id,
+                  faculty_id: labFaculty.faculty_id,
+                  classroom_id: availableClassroom.id,
                   day_of_week: day,
                   start_time: startTime,
                   end_time: endTime,
-                  subject_type: 'lecture',
-                  batch_number: null // Lectures are for entire section
-                })
+                  subject_type: 'lab',
+                  batch_number: batch.number
+                }
                 
-                markFacultyBusy(lectureFaculty.faculty_id, day, startTime, 1)
-                markClassroomOccupied(classroom.id, day, startTime, 1)
-                addToDailySchedule(day, startTime, 1)
-                subjectLectureCount[subject.id][day]++
+                timetableEntries.push(entry)
+                markSlotOccupied(day, timeIndex, 2, labFaculty.faculty_id, availableClassroom.id, entry)
+                scheduled = true
               }
             }
           }
         }
-      }
-
-      // Step 2: Schedule labs and tutorials for batches
-      for (const subject of subjects) {
-        if (subject.has_lab || subject.has_tutorial) {
-          // Find a suitable day for practical sessions
-          for (const day of daysOfWeek) {
-            let allBatchesScheduled = true
+        
+        // Schedule tutorials (1 hour each)
+        if (subject.has_tutorial) {
+          const tutorialFaculty = facultySubjects.find(fs => 
+            fs.subject_id === subject.id && fs.subject_types?.includes('tutorial')
+          )
+          
+          if (tutorialFaculty) {
+            // Tutorial is for the entire section, not batches
+            let scheduled = false
             
-            // Track what's scheduled for each batch on this day for this subject
-            const batchScheduled = new Set<number>()
-            
-            // Try to schedule lab/tutorial sessions
-            const labFaculty = facultySubjects.find(fs => 
-              fs.subject_id === subject.id && fs.subject_types?.includes('lab')
-            )
-            const tutorialFaculty = facultySubjects.find(fs => 
-              fs.subject_id === subject.id && fs.subject_types?.includes('tutorial')
-            )
-
-            // Find a 2-hour continuous slot
-            for (let timeIndex = 0; timeIndex <= timeSlots.length - 4; timeIndex++) {
+            for (const day of shuffledDays) {
+              if (scheduled) break
+              
+              const availableClassroom = tutorialClassrooms.find(room =>
+                findBestTimeSlot(day, 1, tutorialFaculty.faculty_id, room) !== null
+              )
+              
+              if (!availableClassroom) continue
+              
+              const timeIndex = findBestTimeSlot(day, 1, tutorialFaculty.faculty_id, availableClassroom)
+              if (timeIndex === null) continue
+              
               const startTime = timeSlots[timeIndex]
+              const endTime = timeSlots[timeIndex + 2] || '18:00'
               
-              // Skip break times
-              if (BREAK_SLOTS.includes(startTime)) continue
-              
-              let batchesInThisSlot = 0
-              const slotAssignments: Array<{batch: number, type: 'lab' | 'tutorial', faculty: any, classroom: any}> = []
-
-              // Try to assign all 3 batches to this time slot
-              for (const batch of batches) {
-                if (batchScheduled.has(batch.number)) continue
-                
-                // Batch 1 gets lab if available
-                if (batch.number === 1 && subject.has_lab && labFaculty) {
-                  if (isFacultyAvailable(labFaculty.faculty_id, day, startTime, 2)) {
-                    // Find available lab classroom
-                    let labClassroom = null
-                    for (const room of labClassrooms) {
-                      if (isClassroomAvailable(room.id, day, startTime, 2)) {
-                        labClassroom = room
-                        break
-                      }
-                    }
-                    
-                    if (labClassroom) {
-                      slotAssignments.push({
-                        batch: batch.number,
-                        type: 'lab',
-                        faculty: labFaculty,
-                        classroom: labClassroom
-                      })
-                      batchesInThisSlot++
-                    }
-                  }
-                }
-                // Other batches get tutorials or labs based on availability
-                else if (batch.number > 1) {
-                  // Try lab first
-                  if (subject.has_lab && labFaculty && 
-                      isFacultyAvailable(labFaculty.faculty_id, day, startTime, 2)) {
-                    let labClassroom = null
-                    for (const room of labClassrooms) {
-                      if (isClassroomAvailable(room.id, day, startTime, 2) && 
-                          !slotAssignments.find(s => s.classroom.id === room.id)) {
-                        labClassroom = room
-                        break
-                      }
-                    }
-                    
-                    if (labClassroom) {
-                      slotAssignments.push({
-                        batch: batch.number,
-                        type: 'lab',
-                        faculty: labFaculty,
-                        classroom: labClassroom
-                      })
-                      batchesInThisSlot++
-                    }
-                  }
-                  // Try tutorial if lab not available
-                  else if (subject.has_tutorial && tutorialFaculty && 
-                           isFacultyAvailable(tutorialFaculty.faculty_id, day, startTime, 1)) {
-                    let tutorialClassroom = null
-                    for (const room of tutorialClassrooms) {
-                      if (isClassroomAvailable(room.id, day, startTime, 1)) {
-                        tutorialClassroom = room
-                        break
-                      }
-                    }
-                    
-                    if (tutorialClassroom) {
-                      // Schedule 2 tutorial sessions of 1 hour each
-                      for (let tutorialSession = 0; tutorialSession < 2; tutorialSession++) {
-                        const sessionStart = timeSlots[timeIndex + (tutorialSession * 2)]
-                        if (sessionStart && 
-                            isFacultyAvailable(tutorialFaculty.faculty_id, day, sessionStart, 1) &&
-                            isClassroomAvailable(tutorialClassroom.id, day, sessionStart, 1)) {
-                          
-                          slotAssignments.push({
-                            batch: batch.number,
-                            type: 'tutorial',
-                            faculty: tutorialFaculty,
-                            classroom: tutorialClassroom
-                          })
-                          batchesInThisSlot++
-                          break
-                        }
-                      }
-                    }
-                  }
-                }
+              const entry = {
+                section_id: sectionId,
+                subject_id: subject.id,
+                faculty_id: tutorialFaculty.faculty_id,
+                classroom_id: availableClassroom.id,
+                day_of_week: day,
+                start_time: startTime,
+                end_time: endTime,
+                subject_type: 'tutorial',
+                batch_number: null
               }
               
-              // If we successfully assigned sessions, create the timetable entries
-              if (slotAssignments.length > 0) {
-                for (const assignment of slotAssignments) {
-                  const duration = assignment.type === 'lab' ? 2 : 1
-                  const endTimeIndex = timeIndex + (duration * 2)
-                  const endTime = timeSlots[endTimeIndex] || '18:00'
-                  
-                  timetableEntries.push({
-                    section_id: sectionId,
-                    subject_id: subject.id,
-                    faculty_id: assignment.faculty.faculty_id,
-                    classroom_id: assignment.classroom.id,
-                    day_of_week: day,
-                    start_time: startTime,
-                    end_time: endTime,
-                    subject_type: assignment.type,
-                    batch_number: assignment.batch
-                  })
-                  
-                  markFacultyBusy(assignment.faculty.faculty_id, day, startTime, duration)
-                  markClassroomOccupied(assignment.classroom.id, day, startTime, duration)
-                  addToDailySchedule(day, startTime, duration)
-                  batchScheduled.add(assignment.batch)
-                }
-                
-                // Break after successfully scheduling for this time slot
-                if (batchScheduled.size === batches.length) {
-                  break
-                }
-              }
+              timetableEntries.push(entry)
+              markSlotOccupied(day, timeIndex, 1, tutorialFaculty.faculty_id, availableClassroom.id, entry)
+              scheduled = true
             }
           }
         }
       }
-
+      
       // Insert generated entries
       if (timetableEntries.length > 0) {
         const { error: insertError } = await supabase
@@ -464,10 +385,10 @@ export default function Timetable() {
       queryClient.invalidateQueries({ queryKey: ['timetable'] })
       toast({
         title: "Timetable Generated Successfully",
-        description: `Generated ${data.length} classes for the selected section.`,
+        description: `Generated ${data.length} classes. Schedule respects weekly hour limits and varies start times.`,
       })
     },
-    onError: (error: any) => {
+    onError: (error) => {
       toast({
         title: "Generation Failed",
         description: error.message || "Failed to generate timetable. Please try again.",
@@ -511,7 +432,7 @@ export default function Timetable() {
     enabled: !!selectedSection
   })
 
-  const getTimetableCell = (day: string, time: string) => {
+  const getTimetableCell = (day, time) => {
     if (!timetable) return []
     
     return timetable.filter(entry => {
@@ -530,14 +451,14 @@ export default function Timetable() {
     return timeSlots.filter(slot => activeTimes.has(slot))
   }
 
-  const getSubjectTypeBadge = (type: string) => {
+  const getSubjectTypeBadge = (type) => {
     const variants = {
-      lecture: { variant: "default" as const, icon: "📚", color: "bg-primary/10 text-primary border-primary/20" },
-      lab: { variant: "secondary" as const, icon: "🔬", color: "bg-blue-500/10 text-blue-600 border-blue-500/20" },
-      tutorial: { variant: "outline" as const, icon: "📝", color: "bg-green-500/10 text-green-600 border-green-500/20" }
+      lecture: { variant: "default", icon: "📚", color: "bg-primary/10 text-primary border-primary/20" },
+      lab: { variant: "secondary", icon: "🔬", color: "bg-blue-500/10 text-blue-600 border-blue-500/20" },
+      tutorial: { variant: "outline", icon: "📝", color: "bg-green-500/10 text-green-600 border-green-500/20" }
     }
     
-    const config = variants[type as keyof typeof variants]
+    const config = variants[type]
     if (!config) return null
     
     return (
@@ -548,12 +469,12 @@ export default function Timetable() {
     )
   }
 
-  const MobileTimeSlotCard = ({ day, entries }: { day: string, entries: any[] }) => (
+  const MobileTimeSlotCard = ({ day, entries }) => (
     <Card className="mb-3">
       <CardHeader className="pb-2">
         <CardTitle className="text-base flex items-center gap-2">
           <Calendar className="h-4 w-4" />
-          {dayLabels[day as keyof typeof dayLabels]}
+          {dayLabels[day]}
         </CardTitle>
       </CardHeader>
       <CardContent className="space-y-2">
@@ -600,56 +521,63 @@ export default function Timetable() {
     </Card>
   )
 
+  if (sectionsLoading) {
+    return (
+      <div className="space-y-6">
+        <div className="flex flex-col gap-4">
+          <Skeleton className="h-10 w-full max-w-sm" />
+          <Skeleton className="h-10 w-32" />
+        </div>
+        <div className="grid grid-cols-7 gap-2">
+          {Array.from({ length: 35 }).map((_, i) => (
+            <Skeleton key={i} className="h-24" />
+          ))}
+        </div>
+      </div>
+    )
+  }
+
   if (sectionsError || timetableError) {
     return (
       <Alert variant="destructive">
         <AlertCircle className="h-4 w-4" />
         <AlertDescription>
-          Failed to load {sectionsError ? 'sections' : 'timetable data'}. Please try again.
+          Error loading data: {(sectionsError || timetableError)?.message}
         </AlertDescription>
       </Alert>
     )
   }
 
+  const activeTimeSlots = getActiveTimeSlots()
+
   return (
-    <div className="space-y-6 p-4 md:p-6">
-      <div className="flex flex-col md:flex-row md:justify-between md:items-center gap-4">
-        <div>
-          <h1 className="text-2xl md:text-3xl font-bold">Timetable</h1>
-          <p className="text-muted-foreground">View class schedules by section</p>
+    <div className="space-y-6">
+      {/* Header Controls */}
+      <div className="flex flex-col md:flex-row gap-4 items-start md:items-center justify-between">
+        <div className="space-y-1">
+          <h1 className="text-2xl font-bold flex items-center gap-2">
+            <Book className="h-6 w-6" />
+            Timetable Management
+          </h1>
+          <p className="text-muted-foreground">View and generate class schedules</p>
         </div>
         
-        <div className="flex gap-2">
-          <div className="block md:hidden">
-            <Select value={viewMode} onValueChange={(value: 'desktop' | 'mobile') => setViewMode(value)}>
-              <SelectTrigger className="w-32">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="mobile">List View</SelectItem>
-                <SelectItem value="desktop">Grid View</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-          
-          <div className="flex-1 md:w-64">
-            {sectionsLoading ? (
-              <Skeleton className="h-10 w-full" />
-            ) : (
-              <Select value={selectedSection} onValueChange={setSelectedSection}>
-                <SelectTrigger>
-                  <SelectValue placeholder="Select a section" />
-                </SelectTrigger>
-                <SelectContent>
-                  {sections?.map((section) => (
-                    <SelectItem key={section.id} value={section.id}>
-                      {section.year_level} - Section {section.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            )}
-          </div>
+        <div className="flex flex-col md:flex-row gap-3 w-full md:w-auto">
+          <Select
+            value={selectedSection}
+            onValueChange={setSelectedSection}
+          >
+            <SelectTrigger className="w-full md:w-[250px]">
+              <SelectValue placeholder="Select Section" />
+            </SelectTrigger>
+            <SelectContent>
+              {sections?.map((section) => (
+                <SelectItem key={section.id} value={section.id}>
+                  {section.name} - Year {section.year_level}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
 
           {selectedSection && (
             <Button 
@@ -658,139 +586,108 @@ export default function Timetable() {
               className="flex items-center gap-2"
             >
               {generateTimetableMutation.isPending ? (
-                <RefreshCw className="h-4 w-4 animate-spin" />
+                <>
+                  <RefreshCw className="h-4 w-4 animate-spin" />
+                  Generating...
+                </>
               ) : (
-                <Wand2 className="h-4 w-4" />
+                <>
+                  <Wand2 className="h-4 w-4" />
+                  Generate Timetable
+                </>
               )}
-              {generateTimetableMutation.isPending ? 'Generating...' : 'Generate'}
             </Button>
           )}
         </div>
       </div>
 
+      {/* Timetable Content */}
       {selectedSection ? (
         isLoading ? (
-          <div className="space-y-4">
-            <Skeleton className="h-8 w-64" />
-            <Card>
-              <CardContent className="p-6">
-                <div className="grid gap-4">
-                  {[1, 2, 3].map(i => (
-                    <Skeleton key={i} className="h-20 w-full" />
-                  ))}
-                </div>
-              </CardContent>
-            </Card>
-          </div>
-        ) : timetable && timetable.length === 0 ? (
-          <Card>
-            <CardContent className="flex flex-col items-center justify-center py-12">
-              <Calendar className="h-12 w-12 text-muted-foreground mb-4" />
-              <h3 className="text-lg font-medium mb-2">No Classes Scheduled</h3>
-              <p className="text-muted-foreground text-center">
-                This section doesn't have any classes scheduled yet.
-              </p>
-            </CardContent>
-          </Card>
-        ) : viewMode === 'mobile' || window.innerWidth < 768 ? (
-          <div className="space-y-4">
-            <div className="flex items-center gap-2 mb-4">
-              <Clock className="h-5 w-5" />
-              <h2 className="text-xl font-semibold">Weekly Schedule</h2>
-            </div>
-            {daysOfWeek.map(day => {
-              const dayEntries = timetable?.filter(entry => entry.day_of_week === day) || []
-              return <MobileTimeSlotCard key={day} day={day} entries={dayEntries} />
-            })}
+          <div className="grid grid-cols-1 md:grid-cols-6 gap-2">
+            {Array.from({ length: 30 }).map((_, i) => (
+              <Skeleton key={i} className="h-24" />
+            ))}
           </div>
         ) : (
-          <Card>
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2">
-                <Clock className="h-5 w-5" />
-                Weekly Schedule
-                <Badge variant="outline" className="ml-auto">
-                  {timetable?.length || 0} classes
-                </Badge>
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="overflow-x-auto">
-                <table className="w-full border-collapse min-w-[800px]">
-                  <thead>
-                    <tr>
-                      <th className="border border-border p-3 bg-muted/50 font-semibold text-left sticky left-0 z-10 min-w-24">
-                        Time
-                      </th>
-                      {daysOfWeek.map(day => (
-                        <th key={day} className="border border-border p-3 bg-muted/50 font-semibold text-center min-w-48">
-                          {dayLabels[day as keyof typeof dayLabels]}
-                        </th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {getActiveTimeSlots().map(time => (
-                      <tr key={time} className="hover:bg-muted/30 transition-colors">
-                        <td className="border border-border p-3 bg-muted/20 font-mono text-sm font-semibold sticky left-0 z-10">
-                          {time}
-                        </td>
-                        {daysOfWeek.map(day => {
-                          const entries = getTimetableCell(day, time)
-                          return (
-                            <td key={`${day}-${time}`} className="border border-border p-2 align-top min-h-24 bg-background">
-                              {entries.map((entry, index) => (
-                                <div key={index} className="mb-2 last:mb-0">
-                                  <div className="bg-card border border-border/50 rounded-lg p-3 shadow-sm hover:shadow-md transition-all duration-200 hover:border-primary/30">
-                                    <div className="space-y-2">
-                                      <div className="flex items-start justify-between gap-2">
-                                        <div className="flex items-center gap-2 text-sm font-medium">
-                                          <Book className="h-4 w-4 text-primary" />
-                                          {entry.subjects?.code}
-                                        </div>
-                                        {getSubjectTypeBadge(entry.subject_type)}
-                                      </div>
-                                      
-                                      <div className="text-sm text-muted-foreground line-clamp-2">
-                                        {entry.subjects?.name}
-                                      </div>
-                                      
-                                      <div className="space-y-1">
-                                        <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                                          <User className="h-3 w-3" />
-                                          <span className="truncate">{entry.faculty?.name}</span>
-                                        </div>
-                                        
-                                        <div className="flex items-center justify-between">
-                                          <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                                            <MapPin className="h-3 w-3" />
-                                            <span>{entry.classrooms?.name}</span>
-                                          </div>
-                                          {entry.batch_number && (
-                                            <Badge variant="outline" className="text-xs px-2 py-0">
-                                              B{entry.batch_number}
-                                            </Badge>
-                                          )}
-                                        </div>
-                                      </div>
-                                      
-                                      <div className="text-xs font-mono text-muted-foreground bg-muted/30 px-2 py-1 rounded">
-                                        {entry.start_time.substring(0, 5)} - {entry.end_time.substring(0, 5)}
-                                      </div>
-                                    </div>
-                                  </div>
-                                </div>
-                              ))}
-                            </td>
-                          )
-                        })}
-                      </tr>
+          <>
+            {/* Desktop View */}
+            <div className="hidden md:block">
+              <Card>
+                <CardContent className="p-0">
+                  <div className="grid grid-cols-6 border-b">
+                    <div className="p-4 border-r bg-muted/50">
+                      <div className="font-medium text-sm">Time</div>
+                    </div>
+                    {daysOfWeek.map(day => (
+                      <div key={day} className="p-4 border-r last:border-r-0 bg-muted/50">
+                        <div className="font-medium text-sm text-center">{dayLabels[day]}</div>
+                      </div>
                     ))}
-                  </tbody>
-                </table>
-              </div>
-            </CardContent>
-          </Card>
+                  </div>
+
+                  {activeTimeSlots.map((time) => (
+                    <div key={time} className="grid grid-cols-6 border-b last:border-b-0">
+                      <div className="p-2 border-r bg-muted/30 flex items-center">
+                        <div className="font-mono text-xs">{time}</div>
+                      </div>
+                      
+                      {daysOfWeek.map(day => {
+                        const entries = getTimetableCell(day, time)
+                        return (
+                          <div key={`${day}-${time}`} className="p-1 border-r last:border-r-0 min-h-[60px]">
+                            {entries.length > 0 && (
+                              <div className="space-y-1">
+                                {entries.map((entry, index) => (
+                                  <div
+                                    key={index}
+                                    className="bg-card border rounded-lg p-2 text-xs space-y-1 shadow-sm hover:shadow-md transition-shadow"
+                                  >
+                                    <div className="flex items-center justify-between">
+                                      <div className="font-medium">{entry.subjects?.code}</div>
+                                      {getSubjectTypeBadge(entry.subject_type)}
+                                    </div>
+                                    <div className="text-muted-foreground truncate">{entry.subjects?.name}</div>
+                                    <div className="flex items-center gap-1 text-muted-foreground">
+                                      <User className="h-3 w-3" />
+                                      <span className="truncate">{entry.faculty?.name}</span>
+                                    </div>
+                                    <div className="flex items-center gap-1 text-muted-foreground">
+                                      <MapPin className="h-3 w-3" />
+                                      <span>{entry.classrooms?.name}</span>
+                                    </div>
+                                    {entry.batch_number && (
+                                      <Badge variant="outline" className="text-xs w-fit">
+                                        Batch {entry.batch_number}
+                                      </Badge>
+                                    )}
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        )
+                      })}
+                    </div>
+                  ))}
+                </CardContent>
+              </Card>
+            </div>
+
+            {/* Mobile View */}
+            <div className="md:hidden space-y-4">
+              {daysOfWeek.map(day => {
+                const dayEntries = timetable?.filter(entry => entry.day_of_week === day) || []
+                return (
+                  <MobileTimeSlotCard
+                    key={day}
+                    day={day}
+                    entries={dayEntries}
+                  />
+                )
+              })}
+            </div>
+          </>
         )
       ) : (
         <Card>
