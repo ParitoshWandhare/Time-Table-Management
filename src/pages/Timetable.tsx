@@ -67,6 +67,20 @@ export default function Timetable() {
 
       if (fsError) throw fsError
 
+      // Get existing timetable entries from ALL sections to prevent faculty conflicts
+      const { data: existingTimetable, error: existingError } = await supabase
+        .from('timetable')
+        .select(`
+          *,
+          faculty_id,
+          day_of_week,
+          start_time,
+          end_time
+        `)
+        .neq('section_id', sectionId) // Exclude current section as we're regenerating it
+
+      if (existingError) throw existingError
+
       // Define specific classrooms for different types (as requested by user)
       const lectureRooms = ['Room C-204', 'Room C-301']
       const labRooms = ['Lab C-206', 'Lab C-207']
@@ -106,23 +120,6 @@ export default function Timetable() {
       // Time slots and scheduling helpers (updated for hourly slots)
       const BREAK_START = 4 // 12:00 PM index in timeSlots array
       const BREAK_END = 4   // 12:00 PM only (1 hour break)
-      
-      // Scheduling state
-      const schedule = {}
-      const facultySchedule = {}
-      const classroomSchedule = {}
-      const subjectWeeklyHours = {}
-      
-      // Initialize scheduling state with proper faculty tracking
-      daysOfWeek.forEach(day => {
-        schedule[day] = Array(timeSlots.length).fill(null)
-        facultySchedule[day] = Array(timeSlots.length).fill(null).map(() => new Set())
-        classroomSchedule[day] = Array(timeSlots.length).fill(null).map(() => new Set())
-      })
-      
-      subjects.forEach(subject => {
-        subjectWeeklyHours[subject.id] = 0
-      })
       
       // Helper functions (updated for hourly slots)
       const getTimeIndex = (time) => timeSlots.indexOf(time)
@@ -166,6 +163,46 @@ export default function Timetable() {
           if (!classroomSchedule[day][i]) classroomSchedule[day][i] = new Set()
           classroomSchedule[day][i].add(classroomId)
         }
+      }
+      
+      // Scheduling state
+      const schedule = {}
+      const facultySchedule = {}
+      const classroomSchedule = {}
+      const subjectWeeklyHours = {}
+      
+      // Initialize scheduling state with proper faculty tracking
+      daysOfWeek.forEach(day => {
+        schedule[day] = Array(timeSlots.length).fill(null)
+        facultySchedule[day] = Array(timeSlots.length).fill(null).map(() => new Set())
+        classroomSchedule[day] = Array(timeSlots.length).fill(null).map(() => new Set())
+      })
+      
+      subjects.forEach(subject => {
+        subjectWeeklyHours[subject.id] = 0
+      })
+      
+      // Populate faculty schedule with existing timetable entries from other sections
+      if (existingTimetable && existingTimetable.length > 0) {
+        existingTimetable.forEach(entry => {
+          const startIndex = getTimeIndex(entry.start_time.substring(0, 5))
+          const endIndex = getTimeIndex(entry.end_time.substring(0, 5))
+          
+          if (startIndex !== -1 && endIndex !== -1) {
+            const duration = endIndex - startIndex
+            
+            // Mark faculty as occupied for the duration of this existing class
+            for (let i = startIndex; i < startIndex + duration && i < timeSlots.length; i++) {
+              if (!facultySchedule[entry.day_of_week]) {
+                facultySchedule[entry.day_of_week] = Array(timeSlots.length).fill(null).map(() => new Set())
+              }
+              if (!facultySchedule[entry.day_of_week][i]) {
+                facultySchedule[entry.day_of_week][i] = new Set()
+              }
+              facultySchedule[entry.day_of_week][i].add(entry.faculty_id)
+            }
+          }
+        })
       }
       
       // Get random starting times for variety (updated for hourly indices)
