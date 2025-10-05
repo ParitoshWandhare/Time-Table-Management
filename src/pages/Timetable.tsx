@@ -67,55 +67,45 @@ export default function Timetable() {
 
       if (fsError) throw fsError
 
-      // Get existing timetable entries from ALL sections to prevent faculty conflicts
+      // Get existing timetable entries from ALL sections to prevent faculty AND classroom conflicts
       const { data: existingTimetable, error: existingError } = await supabase
         .from('timetable')
         .select(`
-          *,
+          id,
           faculty_id,
+          classroom_id,
           day_of_week,
           start_time,
-          end_time
+          end_time,
+          section_id,
+          subject_id,
+          subject_type
         `)
         .neq('section_id', sectionId) // Exclude current section as we're regenerating it
 
       if (existingError) throw existingError
 
-      // Define specific classrooms for different types (as requested by user)
-      const lectureRooms = ['Room C-204', 'Room C-301']
-      const labRooms = ['Lab C-206', 'Lab C-207']
-      const tutorialRooms = ['T-1', 'T-2']
+      // Load available classrooms by type (no auto-creation)
+      const { data: lectureClassroomsRaw, error: lectureRoomsError } = await supabase
+        .from('classrooms')
+        .select('*')
+        .eq('room_type', 'lecture')
+      const { data: labClassroomsRaw, error: labRoomsError } = await supabase
+        .from('classrooms')
+        .select('*')
+        .eq('room_type', 'lab')
+      const { data: tutorialClassroomsRaw, error: tutorialRoomsError } = await supabase
+        .from('classrooms')
+        .select('*')
+        .eq('room_type', 'tutorial')
 
-      // Ensure these classrooms exist
-      const ensureClassrooms = async (roomNames) => {
-        const existingRooms = []
-        
-        for (const roomName of roomNames) {
-          const { data: existing } = await supabase
-            .from('classrooms')
-            .select('*')
-            .eq('name', roomName)
-            .single()
-          
-          if (existing) {
-            existingRooms.push(existing)
-          } else {
-            const { data: newRoom } = await supabase
-              .from('classrooms')
-              .insert({ name: roomName, capacity: 60 })
-              .select()
-              .single()
-            
-            if (newRoom) existingRooms.push(newRoom)
-          }
-        }
-        
-        return existingRooms
+      if (lectureRoomsError || labRoomsError || tutorialRoomsError) {
+        throw lectureRoomsError || labRoomsError || tutorialRoomsError
       }
 
-      const lectureClassrooms = await ensureClassrooms(lectureRooms)
-      const labClassrooms = await ensureClassrooms(labRooms)
-      const tutorialClassrooms = await ensureClassrooms(tutorialRooms)
+      const lectureClassrooms = lectureClassroomsRaw || []
+      const labClassrooms = labClassroomsRaw || []
+      const tutorialClassrooms = tutorialClassroomsRaw || []
 
       // Time slots and scheduling helpers (updated for hourly slots)
       const BREAK_START = 4 // 12:00 PM index in timeSlots array
@@ -182,7 +172,7 @@ export default function Timetable() {
         subjectWeeklyHours[subject.id] = 0
       })
       
-      // Populate faculty schedule with existing timetable entries from other sections
+      // Populate faculty schedule AND classroom schedule with existing timetable entries from other sections
       if (existingTimetable && existingTimetable.length > 0) {
         existingTimetable.forEach(entry => {
           const startIndex = getTimeIndex(entry.start_time.substring(0, 5))
@@ -191,8 +181,9 @@ export default function Timetable() {
           if (startIndex !== -1 && endIndex !== -1) {
             const duration = endIndex - startIndex
             
-            // Mark faculty as occupied for the duration of this existing class
+            // Mark faculty AND classroom as occupied for the duration of this existing class
             for (let i = startIndex; i < startIndex + duration && i < timeSlots.length; i++) {
+              // Mark faculty as occupied
               if (!facultySchedule[entry.day_of_week]) {
                 facultySchedule[entry.day_of_week] = Array(timeSlots.length).fill(null).map(() => new Set())
               }
@@ -200,6 +191,15 @@ export default function Timetable() {
                 facultySchedule[entry.day_of_week][i] = new Set()
               }
               facultySchedule[entry.day_of_week][i].add(entry.faculty_id)
+              
+              // Mark classroom as occupied (CRITICAL FIX)
+              if (!classroomSchedule[entry.day_of_week]) {
+                classroomSchedule[entry.day_of_week] = Array(timeSlots.length).fill(null).map(() => new Set())
+              }
+              if (!classroomSchedule[entry.day_of_week][i]) {
+                classroomSchedule[entry.day_of_week][i] = new Set()
+              }
+              classroomSchedule[entry.day_of_week][i].add(entry.classroom_id)
             }
           }
         })
@@ -276,13 +276,29 @@ export default function Timetable() {
         dailySubjectLectures[day] = new Set()
       })
       
+      // Track classroom usage to ensure rotation
+      let lectureRoomIndex = 0
+      let labRoomIndex = 0
+      let tutorialRoomIndex = 0
+      
+      // Track faculty usage to ensure fair distribution
+      const facultyUsageCount = {}
+      
       // Step 1: Schedule lectures - ONE lecture per subject per day maximum
       for (const subject of subjects) {
-        const lectureFaculty = facultySubjects.find(fs => 
+        // Get ALL faculty who can teach this subject's lectures
+        const qualifiedLectureFaculty = facultySubjects.filter(fs => 
           fs.subject_id === subject.id && fs.subject_types?.includes('lecture')
         )
         
-        if (!lectureFaculty) continue
+        if (qualifiedLectureFaculty.length === 0) continue
+        
+        // Select a faculty member with least load (round-robin distribution)
+        const lectureFaculty = qualifiedLectureFaculty.reduce((leastUsed, current) => {
+          const leastUsedCount = facultyUsageCount[leastUsed.faculty_id] || 0
+          const currentCount = facultyUsageCount[current.faculty_id] || 0
+          return currentCount < leastUsedCount ? current : leastUsed
+        })
 
         const weeklyHours = subject.weekly_hours
         let hoursScheduled = 0
@@ -303,10 +319,22 @@ export default function Timetable() {
             continue
           }
           
-          // Find available classroom
-          const availableClassroom = lectureClassrooms.find(room =>
-            findBestTimeSlot(day, 1, lectureFaculty.faculty_id, room) !== null
-          )
+          // Find available classroom - try all classrooms starting from last used index
+          let availableClassroom = null
+          let timeIndex = null
+          
+          for (let i = 0; i < lectureClassrooms.length; i++) {
+            const roomIndexToTry = (lectureRoomIndex + i) % lectureClassrooms.length
+            const room = lectureClassrooms[roomIndexToTry]
+            const slot = findBestTimeSlot(day, 1, lectureFaculty.faculty_id, room)
+            
+            if (slot !== null) {
+              availableClassroom = room
+              timeIndex = slot
+              lectureRoomIndex = (roomIndexToTry + 1) % lectureClassrooms.length
+              break
+            }
+          }
           
           if (!availableClassroom) {
             // Remove this day if no classroom available
@@ -314,15 +342,6 @@ export default function Timetable() {
             if (availableDays.length === 0) break
             continue
           }
-          
-          const timeIndex = findBestTimeSlot(day, 1, lectureFaculty.faculty_id, availableClassroom)
-          if (timeIndex === null) {
-            // Remove this day if no time slot available
-            availableDays.splice(dayIndex, 1)
-            if (availableDays.length === 0) break
-            continue
-          }
-          
           const startTime = timeSlots[timeIndex]
           const endTime = timeSlots[timeIndex + 1] || '18:00'
           
@@ -344,6 +363,9 @@ export default function Timetable() {
           hoursScheduled++
           subjectWeeklyHours[subject.id] += 1
           
+          // Track faculty usage
+          facultyUsageCount[lectureFaculty.faculty_id] = (facultyUsageCount[lectureFaculty.faculty_id] || 0) + 1
+          
           // Remove this day from available days for this subject
           availableDays.splice(dayIndex, 1)
           if (availableDays.length === 0 && hoursScheduled < weeklyHours) {
@@ -363,11 +385,18 @@ export default function Timetable() {
       for (const subject of subjects) {
         // Schedule labs (2 hours each)
         if (subject.has_lab) {
-          const labFaculty = facultySubjects.find(fs => 
+          // Get ALL faculty who can teach this subject's labs
+          const qualifiedLabFaculty = facultySubjects.filter(fs => 
             fs.subject_id === subject.id && fs.subject_types?.includes('lab')
           )
           
-          if (labFaculty) {
+          if (qualifiedLabFaculty.length > 0) {
+            // Select a faculty member with least load
+            const labFaculty = qualifiedLabFaculty.reduce((leastUsed, current) => {
+              const leastUsedCount = facultyUsageCount[leastUsed.faculty_id] || 0
+              const currentCount = facultyUsageCount[current.faculty_id] || 0
+              return currentCount < leastUsedCount ? current : leastUsed
+            })
             const shuffledBatches = [...batches].sort(() => Math.random() - 0.5)
             
             for (const batch of shuffledBatches) {
@@ -377,14 +406,24 @@ export default function Timetable() {
               for (const day of shuffledDays) {
                 if (scheduled) break
                 
-                const availableClassroom = labClassrooms.find(room =>
-                  findBestTimeSlot(day, 2, labFaculty.faculty_id, room) !== null
-                )
+                // Find available classroom - try all classrooms starting from last used index
+                let availableClassroom = null
+                let timeIndex = null
                 
-                if (!availableClassroom) continue
+                for (let i = 0; i < labClassrooms.length; i++) {
+                  const roomIndexToTry = (labRoomIndex + i) % labClassrooms.length
+                  const room = labClassrooms[roomIndexToTry]
+                  const slot = findBestTimeSlot(day, 2, labFaculty.faculty_id, room)
+                  
+                  if (slot !== null) {
+                    availableClassroom = room
+                    timeIndex = slot
+                    labRoomIndex = (roomIndexToTry + 1) % labClassrooms.length
+                    break
+                  }
+                }
                 
-                const timeIndex = findBestTimeSlot(day, 2, labFaculty.faculty_id, availableClassroom)
-                if (timeIndex === null) continue
+                if (!availableClassroom || timeIndex === null) continue
                 
                 const startTime = timeSlots[timeIndex]
                 const endTime = timeSlots[timeIndex + 2] || '18:00'
@@ -403,6 +442,9 @@ export default function Timetable() {
                 
                 timetableEntries.push(entry)
                 markSlotOccupied(day, timeIndex, 2, labFaculty.faculty_id, availableClassroom.id, entry)
+                
+                // Track faculty usage
+                facultyUsageCount[labFaculty.faculty_id] = (facultyUsageCount[labFaculty.faculty_id] || 0) + 2
                 scheduled = true
               }
             }
@@ -411,11 +453,18 @@ export default function Timetable() {
         
         // Schedule tutorials (1 hour each, batch-wise)
         if (subject.has_tutorial) {
-          const tutorialFaculty = facultySubjects.find(fs => 
+          // Get ALL faculty who can teach this subject's tutorials
+          const qualifiedTutorialFaculty = facultySubjects.filter(fs => 
             fs.subject_id === subject.id && fs.subject_types?.includes('tutorial')
           )
           
-          if (tutorialFaculty) {
+          if (qualifiedTutorialFaculty.length > 0) {
+            // Select a faculty member with least load
+            const tutorialFaculty = qualifiedTutorialFaculty.reduce((leastUsed, current) => {
+              const leastUsedCount = facultyUsageCount[leastUsed.faculty_id] || 0
+              const currentCount = facultyUsageCount[current.faculty_id] || 0
+              return currentCount < leastUsedCount ? current : leastUsed
+            })
             const shuffledBatches = [...batches].sort(() => Math.random() - 0.5)
             
             // Schedule tutorial for each batch separately
@@ -426,14 +475,24 @@ export default function Timetable() {
               for (const day of shuffledDays) {
                 if (scheduled) break
                 
-                const availableClassroom = tutorialClassrooms.find(room =>
-                  findBestTimeSlot(day, 1, tutorialFaculty.faculty_id, room) !== null
-                )
+                // Find available classroom - try all classrooms starting from last used index
+                let availableClassroom = null
+                let timeIndex = null
                 
-                if (!availableClassroom) continue
+                for (let i = 0; i < tutorialClassrooms.length; i++) {
+                  const roomIndexToTry = (tutorialRoomIndex + i) % tutorialClassrooms.length
+                  const room = tutorialClassrooms[roomIndexToTry]
+                  const slot = findBestTimeSlot(day, 1, tutorialFaculty.faculty_id, room)
+                  
+                  if (slot !== null) {
+                    availableClassroom = room
+                    timeIndex = slot
+                    tutorialRoomIndex = (roomIndexToTry + 1) % tutorialClassrooms.length
+                    break
+                  }
+                }
                 
-                const timeIndex = findBestTimeSlot(day, 1, tutorialFaculty.faculty_id, availableClassroom)
-                if (timeIndex === null) continue
+                if (!availableClassroom || timeIndex === null) continue
                 
                 const startTime = timeSlots[timeIndex]
                 const endTime = timeSlots[timeIndex + 1] || '18:00'
@@ -452,6 +511,9 @@ export default function Timetable() {
                 
                 timetableEntries.push(entry)
                 markSlotOccupied(day, timeIndex, 1, tutorialFaculty.faculty_id, availableClassroom.id, entry)
+                
+                // Track faculty usage
+                facultyUsageCount[tutorialFaculty.faculty_id] = (facultyUsageCount[tutorialFaculty.faculty_id] || 0) + 1
                 scheduled = true
               }
             }

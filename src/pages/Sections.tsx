@@ -12,12 +12,20 @@ import { useToast } from "@/hooks/use-toast"
 import { Plus, School, Users, Edit2, Trash2 } from "lucide-react"
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from "@/components/ui/alert-dialog"
 
-const yearLevels = ['FY', 'SY', 'TY', 'Final Year']
+type YearLevel = "FY" | "SY" | "TY" | "Final Year"
+
+const yearLevels: YearLevel[] = ['FY', 'SY', 'TY', 'Final Year']
+
+interface SectionData {
+  name: string
+  year_level: YearLevel
+  student_count: number
+}
 
 export default function Sections() {
-  const [newSection, setNewSection] = useState({
+  const [newSection, setNewSection] = useState<SectionData>({
     name: "",
-    year_level: "",
+    year_level: "FY",  // Default to valid enum value
     student_count: 60
   })
   const [editSection, setEditSection] = useState<any>(null)
@@ -41,10 +49,10 @@ export default function Sections() {
   })
 
   const createSectionMutation = useMutation({
-    mutationFn: async (sectionData: typeof newSection) => {
+    mutationFn: async (sectionData: SectionData) => {
       const { data, error } = await supabase
         .from('sections')
-        .insert([sectionData as any])
+        .insert([sectionData])
         .select()
       
       if (error) throw error
@@ -54,7 +62,7 @@ export default function Sections() {
       queryClient.invalidateQueries({ queryKey: ['sections'] })
       setNewSection({
         name: "",
-        year_level: "",
+        year_level: "FY",
         student_count: 60
       })
       setOpen(false)
@@ -91,6 +99,13 @@ export default function Sections() {
         title: "Success",
         description: "Section updated successfully",
       })
+    },
+    onError: (error) => {
+      toast({
+        title: "Error",
+        description: error.message,
+        variant: "destructive",
+      })
     }
   })
 
@@ -109,12 +124,19 @@ export default function Sections() {
         title: "Success",
         description: "Section deleted successfully",
       })
+    },
+    onError: (error) => {
+      toast({
+        title: "Error",
+        description: error.message,
+        variant: "destructive",
+      })
     }
   })
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault()
-    if (!newSection.name.trim() || !newSection.year_level) {
+    if (!newSection.name.trim()) {
       toast({
         title: "Error",
         description: "Please fill in all required fields",
@@ -127,7 +149,7 @@ export default function Sections() {
 
   const handleEditSubmit = (e: React.FormEvent) => {
     e.preventDefault()
-    if (!editSection?.name.trim() || !editSection?.year_level) {
+    if (!editSection?.name.trim()) {
       toast({
         title: "Error",
         description: "Please fill in all required fields",
@@ -201,9 +223,12 @@ export default function Sections() {
                 </div>
                 <div className="space-y-2">
                   <Label htmlFor="year_level">Year Level</Label>
-                  <Select value={newSection.year_level} onValueChange={(value) => setNewSection({ ...newSection, year_level: value })}>
+                  <Select 
+                    value={newSection.year_level} 
+                    onValueChange={(value: YearLevel) => setNewSection({ ...newSection, year_level: value })}
+                  >
                     <SelectTrigger>
-                      <SelectValue placeholder="Select year" />
+                      <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
                       {yearLevels.map((year) => (
@@ -258,9 +283,12 @@ export default function Sections() {
                 </div>
                 <div className="space-y-2">
                   <Label htmlFor="edit-year_level">Year Level</Label>
-                  <Select value={editSection?.year_level || ""} onValueChange={(value) => setEditSection({ ...editSection, year_level: value })}>
+                  <Select 
+                    value={editSection?.year_level || "FY"} 
+                    onValueChange={(value: YearLevel) => setEditSection({ ...editSection, year_level: value })}
+                  >
                     <SelectTrigger>
-                      <SelectValue placeholder="Select year" />
+                      <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
                       {yearLevels.map((year) => (

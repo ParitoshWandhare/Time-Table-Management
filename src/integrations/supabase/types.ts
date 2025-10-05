@@ -20,18 +20,21 @@ export type Database = {
           created_at: string
           id: string
           name: string
+          room_type: Database["public"]["Enums"]["room_type"]
         }
         Insert: {
           capacity?: number
           created_at?: string
           id?: string
           name: string
+          room_type?: Database["public"]["Enums"]["room_type"]
         }
         Update: {
           capacity?: number
           created_at?: string
           id?: string
           name?: string
+          room_type?: Database["public"]["Enums"]["room_type"]
         }
         Relationships: []
       }
@@ -232,6 +235,7 @@ export type Database = {
     }
     Enums: {
       day_of_week: "Monday" | "Tuesday" | "Wednesday" | "Thursday" | "Friday"
+      room_type: "lecture" | "lab" | "tutorial"
       subject_type: "lecture" | "lab" | "tutorial"
       year_level: "FY" | "SY" | "TY" | "Final Year"
     }
@@ -362,6 +366,7 @@ export const Constants = {
   public: {
     Enums: {
       day_of_week: ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"],
+      room_type: ["lecture", "lab", "tutorial"],
       subject_type: ["lecture", "lab", "tutorial"],
       year_level: ["FY", "SY", "TY", "Final Year"],
     },

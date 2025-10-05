@@ -13,13 +13,24 @@ import { useToast } from "@/hooks/use-toast"
 import { Plus, Book, Clock, FlaskConical, Users, Edit2, Trash2 } from "lucide-react"
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from "@/components/ui/alert-dialog"
 
-const yearLevels = ['FY', 'SY', 'TY', 'Final Year']
+type YearLevel = "FY" | "SY" | "TY" | "Final Year"
+
+const yearLevels: YearLevel[] = ['FY', 'SY', 'TY', 'Final Year']
+
+interface SubjectData {
+  name: string
+  code: string
+  year_level: YearLevel
+  weekly_hours: number
+  has_lab: boolean
+  has_tutorial: boolean
+}
 
 export default function Subjects() {
-  const [newSubject, setNewSubject] = useState({
+  const [newSubject, setNewSubject] = useState<SubjectData>({
     name: "",
     code: "",
-    year_level: "",
+    year_level: "FY", // ✅ Fixed: Default to valid enum value
     weekly_hours: 3,
     has_lab: false,
     has_tutorial: false
@@ -45,10 +56,10 @@ export default function Subjects() {
   })
 
   const createSubjectMutation = useMutation({
-    mutationFn: async (subjectData: typeof newSubject) => {
+    mutationFn: async (subjectData: SubjectData) => {
       const { data, error } = await supabase
         .from('subjects')
-        .insert([subjectData as any])
+        .insert([subjectData])
         .select()
       
       if (error) throw error
@@ -59,7 +70,7 @@ export default function Subjects() {
       setNewSubject({
         name: "",
         code: "",
-        year_level: "",
+        year_level: "FY",
         weekly_hours: 3,
         has_lab: false,
         has_tutorial: false
@@ -98,6 +109,13 @@ export default function Subjects() {
         title: "Success",
         description: "Subject updated successfully",
       })
+    },
+    onError: (error) => {
+      toast({
+        title: "Error",
+        description: error.message,
+        variant: "destructive",
+      })
     }
   })
 
@@ -116,12 +134,19 @@ export default function Subjects() {
         title: "Success",
         description: "Subject deleted successfully",
       })
+    },
+    onError: (error) => {
+      toast({
+        title: "Error",
+        description: error.message,
+        variant: "destructive",
+      })
     }
   })
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault()
-    if (!newSubject.name.trim() || !newSubject.code.trim() || !newSubject.year_level) {
+    if (!newSubject.name.trim() || !newSubject.code.trim()) {
       toast({
         title: "Error",
         description: "Please fill in all required fields",
@@ -134,7 +159,7 @@ export default function Subjects() {
 
   const handleEditSubmit = (e: React.FormEvent) => {
     e.preventDefault()
-    if (!editSubject?.name.trim() || !editSubject?.code.trim() || !editSubject?.year_level) {
+    if (!editSubject?.name.trim() || !editSubject?.code.trim()) {
       toast({
         title: "Error",
         description: "Please fill in all required fields",
@@ -208,9 +233,12 @@ export default function Subjects() {
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-2">
                   <Label htmlFor="year_level">Year Level</Label>
-                  <Select value={newSubject.year_level} onValueChange={(value) => setNewSubject({ ...newSubject, year_level: value })}>
+                  <Select 
+                    value={newSubject.year_level} 
+                    onValueChange={(value: YearLevel) => setNewSubject({ ...newSubject, year_level: value })}
+                  >
                     <SelectTrigger>
-                      <SelectValue placeholder="Select year" />
+                      <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
                       {yearLevels.map((year) => (
@@ -293,9 +321,12 @@ export default function Subjects() {
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-2">
                   <Label htmlFor="edit-year_level">Year Level</Label>
-                  <Select value={editSubject?.year_level || ""} onValueChange={(value) => setEditSubject({ ...editSubject, year_level: value })}>
+                  <Select 
+                    value={editSubject?.year_level || "FY"} 
+                    onValueChange={(value: YearLevel) => setEditSubject({ ...editSubject, year_level: value })}
+                  >
                     <SelectTrigger>
-                      <SelectValue placeholder="Select year" />
+                      <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
                       {yearLevels.map((year) => (

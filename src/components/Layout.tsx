@@ -12,14 +12,14 @@ export function Layout({ children }: LayoutProps) {
       <header className="h-12 flex items-center justify-between border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60 px-4 sticky top-0 z-40">
         <div className="flex items-center gap-2">
           <SidebarTrigger />
-          <h1 className="font-semibold text-base sm:text-lg truncate">BTech Time Table Management</h1>
+          <h1 className="font-semibold text-base sm:text-lg truncate">OptiSchedule</h1>
         </div>
         <ThemeToggle />
       </header>
 
       <div className="flex min-h-screen w-full">
         <AppSidebar />
-        <main className="flex-1 p-4 sm:p-6 bg-muted/20">
+        <main className="flex-1 pl-0 pt-4 sm:pt-6 pr-4 sm:pr-6 pb-4 sm:pb-6 bg-muted/20">
           {children}
         </main>
       </div>

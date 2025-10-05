@@ -1,4 +1,4 @@
-import { Calendar, Users, Book, School, Clock } from "lucide-react"
+import { Calendar, Users, Book, School, Clock, DoorOpen, UserCog, Building } from "lucide-react"
 import { NavLink, useLocation } from "react-router-dom"
 import {
   Sidebar,
@@ -17,7 +17,10 @@ const items = [
   { title: "Faculty", url: "/faculty", icon: Users },
   { title: "Subjects", url: "/subjects", icon: Book },
   { title: "Sections", url: "/sections", icon: School },
+  { title: "Classrooms", url: "/classrooms", icon: DoorOpen },
   { title: "Timetable", url: "/timetable", icon: Clock },
+  { title: "Faculty Timetable", url: "/faculty-timetable", icon: UserCog },
+  { title: "Classroom Timetable", url: "/classroom-timetable", icon: Building },
 ]
 
 export function AppSidebar() {
@@ -29,7 +32,7 @@ export function AppSidebar() {
     isActive ? "bg-sidebar-accent text-sidebar-accent-foreground font-medium" : "hover:bg-sidebar-accent/50"
 
   return (
-    <Sidebar collapsible="icon">
+    <Sidebar collapsible="icon" className="group-data-[side=left]:border-r-0 group-data-[side=right]:border-l-0">
       <SidebarTrigger className="m-2 self-end" />
 
       <SidebarContent>
